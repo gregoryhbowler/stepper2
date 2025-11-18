@@ -61,23 +61,6 @@ export function resetSequencer() {
     }
 }
 
-function getMorphedParams(track) {
-    if (!track.targetParams || track.morphAmount === 0) {
-        return track.params;
-    }
-    
-    const t = track.morphAmount / 100;
-    const morphed = {};
-    
-    Object.keys(track.params).forEach(key => {
-        const current = track.params[key];
-        const target = track.targetParams.params[key];
-        morphed[key] = current + (target - current) * t;
-    });
-    
-    return morphed;
-}
-
 function step() {
     // Increment step
     state.currentStep = (state.currentStep + 1) % 16;
@@ -110,14 +93,9 @@ function step() {
             params = stepLock.params;
             fx = stepLock.fx;
         } else {
-            // Use Normal State for synth if available, otherwise current
-            engine = track.normalState?.engine || track.engine;
-            
-            // Apply morph to get current effective params
-            const effectiveParams = getMorphedParams(track);
-            params = track.normalState?.params || effectiveParams;
-            
-            // Current live FX
+            // Use current live parameters (these are already morphed if morph is active)
+            engine = track.engine;
+            params = track.params;
             fx = track.fx;
         }
         
@@ -136,9 +114,8 @@ function step() {
                 
                 // Get target parameters
                 const nextLock = track.stepLocks[nextStep];
-                const targetEngine = nextLock?.engine || track.normalState?.engine || track.engine;
-                const targetEffectiveParams = getMorphedParams(track);
-                const targetParams = nextLock?.params || track.normalState?.params || targetEffectiveParams;
+                const targetEngine = nextLock?.engine || track.engine;
+                const targetParams = nextLock?.params || track.params;
                 const targetFX = nextLock?.fx || track.fx;
                 
                 // Play with slide (parameter automation)
