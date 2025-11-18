@@ -232,8 +232,8 @@ function renderParameters() {
     const spec = ENGINE_SPECS[track.engine];
     if (!spec) return;
     
-    // Apply morph if active
-    const displayParams = getMorphedParams(track);
+    // Show actual current params (live values)
+    const displayParams = track.params;
     
     container.innerHTML = Object.entries(spec.params).map(([key, param]) => {
         const value = displayParams[key];
@@ -321,7 +321,11 @@ function getMorphedParams(track) {
     Object.keys(track.params).forEach(key => {
         const current = track.params[key];
         const target = track.targetParams.params[key];
-        morphed[key] = current + (target - current) * t;
+        if (target !== undefined) {
+            morphed[key] = current + (target - current) * t;
+        } else {
+            morphed[key] = current;
+        }
     });
     
     return morphed;
@@ -367,7 +371,7 @@ function setupEventListeners() {
 }
 
 function setupTrackListeners() {
-    // Track selection - Allow during playback
+    // Track selection - enabled during playback
     document.querySelectorAll('.track').forEach(track => {
         track.addEventListener('click', (e) => {
             if (e.target.classList.contains('track-btn') || 
@@ -481,11 +485,10 @@ function setupLockListeners() {
                 if (track.stepLocks[stepIndex]) {
                     track.stepLocks[stepIndex] = null;
                 } else {
-                    // Use morphed params if available
-                    const currentParams = getMorphedParams(track);
+                    // Lock current live parameters
                     track.stepLocks[stepIndex] = {
                         engine: track.engine,
-                        params: { ...currentParams },
+                        params: { ...track.params },
                         fx: { ...track.fx }
                     };
                 }
@@ -523,12 +526,9 @@ function setupSidePanelListeners() {
                 track.params[key] = param.default;
             });
             
-            // Save normal state
-            track.normalState = {
-                engine: track.engine,
-                params: { ...track.params },
-                fx: { ...track.fx }
-            };
+            // Reset morph
+            track.targetParams = null;
+            track.morphAmount = 0;
             
             renderTracks();
             renderSidePanel();
@@ -553,6 +553,8 @@ function setupSidePanelListeners() {
             track.engine = track.normalState.engine;
             track.params = { ...track.normalState.params };
             track.fx = { ...track.normalState.fx };
+            track.targetParams = null;
+            track.morphAmount = 0;
             renderTracks();
             renderSidePanel();
             showFeedback('NORMAL STATE RECALLED!');
@@ -579,7 +581,7 @@ function setupSidePanelListeners() {
     
     document.getElementById('lock-morph-btn')?.addEventListener('click', () => {
         const track = getSelectedTrack();
-        if (track.targetParams) {
+        if (track.targetParams && track.morphAmount > 0) {
             const morphed = getMorphedParams(track);
             track.params = { ...morphed };
             track.targetParams = null;
@@ -589,56 +591,81 @@ function setupSidePanelListeners() {
         }
     });
     
-    // Morph slider - multiple event handlers for better responsiveness
+    // Morph slider - updates live params
     const morphSlider = document.getElementById('morph-slider');
     if (morphSlider) {
         const updateMorph = (e) => {
             const track = getSelectedTrack();
-            track.morphAmount = parseInt(e.target.value);
-            renderSidePanel();
+            const newAmount = parseInt(e.target.value);
+            track.morphAmount = newAmount;
+            
+            // Apply morph to live params
+            if (track.targetParams && newAmount > 0) {
+                const morphed = getMorphedParams(track);
+                Object.keys(morphed).forEach(key => {
+                    track.params[key] = morphed[key];
+                });
+            }
+            
+            // Update display
+            const amountDisplay = morphSlider.parentElement.querySelector('.morph-amount');
+            if (amountDisplay) {
+                amountDisplay.textContent = `${newAmount}%`;
+            }
+            
+            // Re-render parameters to show new values
+            renderParameters();
         };
         morphSlider.addEventListener('input', updateMorph);
         morphSlider.addEventListener('change', updateMorph);
-        morphSlider.addEventListener('click', updateMorph);
     }
     
-    // Parameter sliders - multiple event handlers for responsiveness
+    // Parameter sliders - update live params immediately
     document.querySelectorAll('[data-param]').forEach(slider => {
         const updateParam = (e) => {
             const track = getSelectedTrack();
-            track.params[slider.dataset.param] = parseFloat(e.target.value);
-            renderSidePanel();
+            const value = parseFloat(e.target.value);
+            track.params[slider.dataset.param] = value;
+            
+            // Update display value immediately
+            const valueDisplay = slider.parentElement.querySelector('.param-value');
+            if (valueDisplay) {
+                const spec = ENGINE_SPECS[track.engine];
+                const paramSpec = spec.params[slider.dataset.param];
+                valueDisplay.textContent = value.toFixed(paramSpec.step < 0.01 ? 3 : 2);
+            }
         };
         slider.addEventListener('input', updateParam);
         slider.addEventListener('change', updateParam);
-        slider.addEventListener('click', updateParam);
-        slider.addEventListener('mousedown', updateParam);
     });
     
-    // FX sliders - multiple event handlers
+    // FX sliders - immediate updates
     document.querySelectorAll('[data-fx]').forEach(slider => {
         const updateFX = (e) => {
             const track = getSelectedTrack();
-            track.fx[slider.dataset.fx] = parseFloat(e.target.value);
-            renderSidePanel();
+            const value = parseFloat(e.target.value);
+            track.fx[slider.dataset.fx] = value;
+            
+            // Update display value immediately
+            const valueDisplay = slider.parentElement.querySelector('.param-value');
+            if (valueDisplay) {
+                const spec = FX_SPECS[slider.dataset.fx];
+                valueDisplay.textContent = value.toFixed(spec.step < 0.01 ? 3 : 2);
+            }
         };
         slider.addEventListener('input', updateFX);
         slider.addEventListener('change', updateFX);
-        slider.addEventListener('click', updateFX);
-        slider.addEventListener('mousedown', updateFX);
     });
     
     // Quick actions
     document.getElementById('trigger-btn')?.addEventListener('click', async () => {
         const track = getSelectedTrack();
-        const displayParams = getMorphedParams(track);
-        await audioEngine.playDrum(track.id, track.engine, displayParams, track.fx, 0.8);
+        await audioEngine.playDrum(track.id, track.engine, track.params, track.fx, 0.8);
     });
     
     document.getElementById('test-sound-btn')?.addEventListener('click', async () => {
         const track = getSelectedTrack();
-        const displayParams = getMorphedParams(track);
-        await audioEngine.playDrum(track.id, track.engine, displayParams, track.fx, 0.8);
+        await audioEngine.playDrum(track.id, track.engine, track.params, track.fx, 0.8);
     });
     
     document.getElementById('randomize-pattern-btn')?.addEventListener('click', () => {
@@ -676,7 +703,7 @@ function setupBottomControlsListeners() {
     
     document.getElementById('global-lock-btn')?.addEventListener('click', () => {
         Object.values(state.tracks).forEach(track => {
-            if (track.targetParams) {
+            if (track.targetParams && track.morphAmount > 0) {
                 const morphed = getMorphedParams(track);
                 track.params = { ...morphed };
                 track.targetParams = null;
@@ -698,27 +725,46 @@ function setupBottomControlsListeners() {
             
             Object.values(state.tracks).forEach(track => {
                 track.morphAmount = amount;
+                
+                // Apply morph to live params
+                if (track.targetParams && amount > 0) {
+                    const morphed = getMorphedParams(track);
+                    Object.keys(morphed).forEach(key => {
+                        track.params[key] = morphed[key];
+                    });
+                }
             });
             
+            // Update display
+            const amountDisplay = globalMorphSlider.parentElement.querySelector('.morph-amount');
+            if (amountDisplay) {
+                amountDisplay.textContent = `${amount}%`;
+            }
+            
             renderSidePanel();
-            renderBottomControls();
         };
         globalMorphSlider.addEventListener('input', updateGlobalMorph);
         globalMorphSlider.addEventListener('change', updateGlobalMorph);
-        globalMorphSlider.addEventListener('click', updateGlobalMorph);
     }
     
     document.querySelectorAll('[data-master-fx]').forEach(slider => {
         const updateMasterFX = (e) => {
-            state.masterFX[slider.dataset.masterFx] = parseFloat(e.target.value);
-            renderBottomControls();
-            if (audioEngine) {
+            const value = parseFloat(e.target.value);
+            state.masterFX[slider.dataset.masterFx] = value;
+            
+            // Update display value immediately
+            const valueDisplay = slider.parentElement.querySelector('.param-value');
+            if (valueDisplay) {
+                const spec = FX_SPECS[slider.dataset.masterFx];
+                valueDisplay.textContent = value.toFixed(spec.step < 0.01 ? 3 : 2);
+            }
+            
+            if (audioEngine && audioEngine.updateMasterFX) {
                 audioEngine.updateMasterFX(state.masterFX);
             }
         };
         slider.addEventListener('input', updateMasterFX);
         slider.addEventListener('change', updateMasterFX);
-        slider.addEventListener('click', updateMasterFX);
     });
 }
 
@@ -741,6 +787,7 @@ function selectPattern(index) {
     if (patternBank.hasPattern(index)) {
         patternBank.loadPattern(index);
         renderTracks();
+        renderSidePanel();
     }
     
     renderPatternBank();
