@@ -367,7 +367,7 @@ function setupEventListeners() {
 }
 
 function setupTrackListeners() {
-    // Track selection
+    // Track selection - Allow during playback
     document.querySelectorAll('.track').forEach(track => {
         track.addEventListener('click', (e) => {
             if (e.target.classList.contains('track-btn') || 
@@ -481,9 +481,11 @@ function setupLockListeners() {
                 if (track.stepLocks[stepIndex]) {
                     track.stepLocks[stepIndex] = null;
                 } else {
+                    // Use morphed params if available
+                    const currentParams = getMorphedParams(track);
                     track.stepLocks[stepIndex] = {
                         engine: track.engine,
-                        params: { ...track.params },
+                        params: { ...currentParams },
                         fx: { ...track.fx }
                     };
                 }
@@ -587,39 +589,56 @@ function setupSidePanelListeners() {
         }
     });
     
-    document.getElementById('morph-slider')?.addEventListener('input', (e) => {
-        const track = getSelectedTrack();
-        track.morphAmount = parseInt(e.target.value);
-        renderSidePanel();
-    });
+    // Morph slider - multiple event handlers for better responsiveness
+    const morphSlider = document.getElementById('morph-slider');
+    if (morphSlider) {
+        const updateMorph = (e) => {
+            const track = getSelectedTrack();
+            track.morphAmount = parseInt(e.target.value);
+            renderSidePanel();
+        };
+        morphSlider.addEventListener('input', updateMorph);
+        morphSlider.addEventListener('change', updateMorph);
+        morphSlider.addEventListener('click', updateMorph);
+    }
     
-    // Parameter sliders
+    // Parameter sliders - multiple event handlers for responsiveness
     document.querySelectorAll('[data-param]').forEach(slider => {
-        slider.addEventListener('input', (e) => {
+        const updateParam = (e) => {
             const track = getSelectedTrack();
             track.params[slider.dataset.param] = parseFloat(e.target.value);
             renderSidePanel();
-        });
+        };
+        slider.addEventListener('input', updateParam);
+        slider.addEventListener('change', updateParam);
+        slider.addEventListener('click', updateParam);
+        slider.addEventListener('mousedown', updateParam);
     });
     
-    // FX sliders
+    // FX sliders - multiple event handlers
     document.querySelectorAll('[data-fx]').forEach(slider => {
-        slider.addEventListener('input', (e) => {
+        const updateFX = (e) => {
             const track = getSelectedTrack();
             track.fx[slider.dataset.fx] = parseFloat(e.target.value);
             renderSidePanel();
-        });
+        };
+        slider.addEventListener('input', updateFX);
+        slider.addEventListener('change', updateFX);
+        slider.addEventListener('click', updateFX);
+        slider.addEventListener('mousedown', updateFX);
     });
     
     // Quick actions
     document.getElementById('trigger-btn')?.addEventListener('click', async () => {
         const track = getSelectedTrack();
-        await audioEngine.playDrum(track.id, track.engine, track.params, track.fx, 0.8);
+        const displayParams = getMorphedParams(track);
+        await audioEngine.playDrum(track.id, track.engine, displayParams, track.fx, 0.8);
     });
     
     document.getElementById('test-sound-btn')?.addEventListener('click', async () => {
         const track = getSelectedTrack();
-        await audioEngine.playDrum(track.id, track.engine, track.params, track.fx, 0.8);
+        const displayParams = getMorphedParams(track);
+        await audioEngine.playDrum(track.id, track.engine, displayParams, track.fx, 0.8);
     });
     
     document.getElementById('randomize-pattern-btn')?.addEventListener('click', () => {
@@ -671,26 +690,35 @@ function setupBottomControlsListeners() {
         showFeedback('GLOBAL MORPH LOCKED!');
     });
     
-    document.getElementById('global-morph-slider')?.addEventListener('input', (e) => {
-        const amount = parseInt(e.target.value);
-        state.globalMorphAmount = amount;
-        
-        Object.values(state.tracks).forEach(track => {
-            track.morphAmount = amount;
-        });
-        
-        renderSidePanel();
-        renderBottomControls();
-    });
+    const globalMorphSlider = document.getElementById('global-morph-slider');
+    if (globalMorphSlider) {
+        const updateGlobalMorph = (e) => {
+            const amount = parseInt(e.target.value);
+            state.globalMorphAmount = amount;
+            
+            Object.values(state.tracks).forEach(track => {
+                track.morphAmount = amount;
+            });
+            
+            renderSidePanel();
+            renderBottomControls();
+        };
+        globalMorphSlider.addEventListener('input', updateGlobalMorph);
+        globalMorphSlider.addEventListener('change', updateGlobalMorph);
+        globalMorphSlider.addEventListener('click', updateGlobalMorph);
+    }
     
     document.querySelectorAll('[data-master-fx]').forEach(slider => {
-        slider.addEventListener('input', (e) => {
+        const updateMasterFX = (e) => {
             state.masterFX[slider.dataset.masterFx] = parseFloat(e.target.value);
             renderBottomControls();
             if (audioEngine) {
                 audioEngine.updateMasterFX(state.masterFX);
             }
-        });
+        };
+        slider.addEventListener('input', updateMasterFX);
+        slider.addEventListener('change', updateMasterFX);
+        slider.addEventListener('click', updateMasterFX);
     });
 }
 
@@ -882,4 +910,3 @@ export function updateBarDisplay() {
         display.textContent = `${state.currentBar + 1}/4`;
     }
 }
-
