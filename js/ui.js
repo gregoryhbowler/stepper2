@@ -103,6 +103,41 @@ export function renderTracks() {
     const container = document.getElementById('tracks-panel');
     if (!container) return;
     
+    // Check if tracks exist - if not, do full render
+    const existingTracks = container.querySelectorAll('.track');
+    const needsFullRender = existingTracks.length === 0;
+    
+    if (needsFullRender) {
+        // Full render - create all HTML
+        const tracksHTML = Object.values(state.tracks).map(track => `
+            <div class="track ${track.id === state.selectedTrack ? 'selected' : ''}" data-track="${track.id}">
+                <div class="track-header">
+                    <div class="track-name">${track.name} — ${ENGINE_SPECS[track.engine]?.name || track.engine}</div>
+                    <div class="track-buttons">
+                        <button class="track-btn ${track.mute ? 'active' : ''}" data-track="${track.id}" data-action="mute">[M]</button>
+                        <button class="track-btn" data-track="${track.id}" data-action="randomize">[R]</button>
+                        <button class="track-btn" data-track="${track.id}" data-action="clear">[C]</button>
+                    </div>
+                </div>
+                <div class="steps-grid" data-track="${track.id}">
+                    ${generateStepsHTML(track)}
+                </div>
+            </div>
+        `).join('');
+        
+        container.innerHTML = tracksHTML;
+        setupTrackListeners();
+    } else {
+        // Partial update - only update what changed
+        updateTrackVisuals();
+    }
+}
+
+// Force a full re-render (use when loading patterns, etc.)
+export function forceRenderTracks() {
+    const container = document.getElementById('tracks-panel');
+    if (!container) return;
+    
     const tracksHTML = Object.values(state.tracks).map(track => `
         <div class="track ${track.id === state.selectedTrack ? 'selected' : ''}" data-track="${track.id}">
             <div class="track-header">
@@ -121,6 +156,93 @@ export function renderTracks() {
     
     container.innerHTML = tracksHTML;
     setupTrackListeners();
+}
+
+function updateTrackVisuals() {
+    // Update only the visual state without destroying DOM
+    Object.values(state.tracks).forEach(track => {
+        const trackElement = document.querySelector(`.track[data-track="${track.id}"]`);
+        if (!trackElement) return;
+        
+        // Update selected state
+        if (track.id === state.selectedTrack) {
+            trackElement.classList.add('selected');
+        } else {
+            trackElement.classList.remove('selected');
+        }
+        
+        // Update mute button
+        const muteBtn = trackElement.querySelector('[data-action="mute"]');
+        if (muteBtn) {
+            if (track.mute) {
+                muteBtn.classList.add('active');
+            } else {
+                muteBtn.classList.remove('active');
+            }
+        }
+        
+        // Update track name (in case engine changed)
+        const trackName = trackElement.querySelector('.track-name');
+        if (trackName) {
+            trackName.textContent = `${track.name} — ${ENGINE_SPECS[track.engine]?.name || track.engine}`;
+        }
+        
+        // Update steps
+        const stepsGrid = trackElement.querySelector('.steps-grid');
+        if (stepsGrid) {
+            track.steps.forEach((isActive, i) => {
+                const stepContainers = stepsGrid.querySelectorAll('.step-container');
+                if (stepContainers[i]) {
+                    const step = stepContainers[i].querySelector('.step');
+                    const velocityBar = stepContainers[i].querySelector('.velocity-bar');
+                    const velocityDisplay = stepContainers[i].querySelector('.velocity-display');
+                    const pLock = stepContainers[i].querySelector('.lock-btn.plock');
+                    const slide = stepContainers[i].querySelector('.lock-btn.slide');
+                    const conditionLabel = stepContainers[i].querySelector('.condition-label');
+                    
+                    if (step) {
+                        // Update step classes
+                        const isPlaying = state.isPlaying && state.currentStep === i;
+                        const hasP = track.stepLocks[i] !== null;
+                        
+                        step.className = 'step';
+                        if (isActive) step.classList.add('active');
+                        if (isPlaying) step.classList.add('playing');
+                        if (hasP) step.classList.add('has-locks');
+                        
+                        // Update velocity
+                        if (velocityBar) {
+                            velocityBar.style.height = `${track.velocities[i] * 100}%`;
+                        }
+                        if (velocityDisplay) {
+                            velocityDisplay.textContent = Math.round(track.velocities[i] * 100);
+                        }
+                    }
+                    
+                    // Update locks
+                    if (pLock) {
+                        if (track.stepLocks[i]) {
+                            pLock.classList.add('active');
+                        } else {
+                            pLock.classList.remove('active');
+                        }
+                    }
+                    if (slide) {
+                        if (track.stepSlides[i]) {
+                            slide.classList.add('active');
+                        } else {
+                            slide.classList.remove('active');
+                        }
+                    }
+                    
+                    // Update condition
+                    if (conditionLabel) {
+                        conditionLabel.textContent = track.stepConditions[i];
+                    }
+                }
+            });
+        }
+    });
 }
 
 function generateStepsHTML(track) {
@@ -362,7 +484,7 @@ function setupEventListeners() {
     
     document.getElementById('magic-btn')?.addEventListener('click', async () => {
         await patternBank.loadMagicPattern();
-        renderTracks();
+        forceRenderTracks();
         showFeedback('MAGIC!');
     });
     
@@ -422,13 +544,14 @@ function setupTrackListeners() {
             
             if (action === 'mute') {
                 track.mute = !track.mute;
+                renderTracks(); // Just visual update, no need to force
             } else if (action === 'randomize') {
                 randomizeTrackPattern(track);
+                forceRenderTracks(); // Steps changed, need full render
             } else if (action === 'clear') {
                 clearTrackPattern(track);
+                forceRenderTracks(); // Steps changed, need full render
             }
-            
-            renderTracks();
         });
     });
     
