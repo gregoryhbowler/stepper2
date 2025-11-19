@@ -4,8 +4,10 @@ export class DrumSynthEngine {
     constructor() {
         this.audioContext = null;
         this.masterGain = null;
+        this.masterFXInput = null;
         this.trackGains = {};
         this.masterFXNodes = {};
+        this.currentMasterFX = null;
         this.initialized = false;
     }
     
@@ -18,14 +20,21 @@ export class DrumSynthEngine {
             // Create master gain
             this.masterGain = this.audioContext.createGain();
             this.masterGain.gain.value = 0.7;
+            
+            // Create master FX chain input
+            this.masterFXInput = this.audioContext.createGain();
+            this.masterFXInput.gain.value = 1.0;
+            
+            // Initial connection (will be rebuilt when FX change)
+            this.masterFXInput.connect(this.masterGain);
             this.masterGain.connect(this.audioContext.destination);
             
-            // Create track gains
+            // Create track gains - connect to master FX input
             const trackIds = ['kick', 'snare', 'hihat', 'tom', 'perc', 'cymbal'];
             trackIds.forEach(id => {
                 const gain = this.audioContext.createGain();
                 gain.gain.value = 1.0;
-                gain.connect(this.masterGain);
+                gain.connect(this.masterFXInput);
                 this.trackGains[id] = gain;
             });
             
@@ -43,6 +52,204 @@ export class DrumSynthEngine {
         if (this.audioContext.state === 'suspended') {
             await this.audioContext.resume();
         }
+    }
+    
+    // Update master FX chain
+    updateMasterFX(fx) {
+        if (!this.initialized) return;
+        
+        // Store current FX settings
+        this.currentMasterFX = { ...fx };
+        
+        // Disconnect all track gains from current chain
+        const trackIds = ['kick', 'snare', 'hihat', 'tom', 'perc', 'cymbal'];
+        trackIds.forEach(id => {
+            if (this.trackGains[id]) {
+                this.trackGains[id].disconnect();
+            }
+        });
+        
+        // Disconnect old master FX input
+        this.masterFXInput.disconnect();
+        
+        // Rebuild master FX chain
+        let currentNode = this.masterFXInput;
+        currentNode = this.applyMasterFXChain(currentNode, fx);
+        
+        // Connect final node to master gain
+        currentNode.connect(this.masterGain);
+        
+        // Reconnect all track gains to new chain input
+        trackIds.forEach(id => {
+            if (this.trackGains[id]) {
+                this.trackGains[id].connect(this.masterFXInput);
+            }
+        });
+    }
+    
+    // Apply master FX chain (similar to track FX but for master)
+    applyMasterFXChain(input, fx) {
+        const ctx = this.audioContext;
+        let output = input;
+        
+        // 1. Wasp Filter
+        if (fx.waspFilter > 0) {
+            const dry = ctx.createGain();
+            dry.gain.value = 1 - fx.waspFilter;
+            
+            const wet = ctx.createGain();
+            wet.gain.value = fx.waspFilter;
+            
+            // Pre-drive
+            const preShaper = ctx.createWaveShaper();
+            preShaper.curve = this.makeDistortionCurve(fx.waspDrive * 0.9);
+            
+            // Four cascaded lowpass filters
+            let waspChain = preShaper;
+            for (let i = 0; i < 4; i++) {
+                const filter = ctx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.value = fx.waspFreq;
+                filter.Q.value = fx.waspRes / 4;
+                waspChain.connect(filter);
+                waspChain = filter;
+            }
+            
+            waspChain.connect(wet);
+            
+            output.connect(preShaper);
+            output.connect(dry);
+            
+            const mixer = ctx.createGain();
+            dry.connect(mixer);
+            wet.connect(mixer);
+            output = mixer;
+        }
+        
+        // 2. Drive
+        if (fx.drive > 1) {
+            const driveShaper = ctx.createWaveShaper();
+            driveShaper.curve = this.makeDistortionCurve(fx.drive);
+            output.connect(driveShaper);
+            output = driveShaper;
+        }
+        
+        // 3. Distortion
+        if (fx.distortion > 0) {
+            const distShaper = ctx.createWaveShaper();
+            const amount = fx.distortion * 50;
+            const curve = new Float32Array(256);
+            for (let i = 0; i < 256; i++) {
+                const x = (i * 2 / 256) - 1;
+                const ex = Math.exp(amount * x);
+                const eMx = Math.exp(-amount * x);
+                curve[i] = (ex - eMx) / (ex + eMx);
+            }
+            distShaper.curve = curve;
+            
+            const compensation = ctx.createGain();
+            compensation.gain.value = 1 / (1 + fx.distortion);
+            
+            output.connect(distShaper);
+            distShaper.connect(compensation);
+            output = compensation;
+        }
+        
+        // 4. Resonator
+        if (fx.resonator > 0) {
+            const dry = ctx.createGain();
+            dry.gain.value = 1 - fx.resonator * 0.3;
+            
+            const wet = ctx.createGain();
+            wet.gain.value = fx.resonator * 0.7;
+            
+            const resDelay = ctx.createDelay(2);
+            resDelay.delayTime.value = 1 / fx.resFreq;
+            
+            const resFilter = ctx.createBiquadFilter();
+            resFilter.type = 'bandpass';
+            resFilter.frequency.value = fx.resFreq;
+            resFilter.Q.value = 20;
+            
+            const resFeedback = ctx.createGain();
+            resFeedback.gain.value = 0.85 * fx.resonator;
+            
+            output.connect(resDelay);
+            resDelay.connect(resFilter);
+            resFilter.connect(resFeedback);
+            resFeedback.connect(resDelay);
+            resFilter.connect(wet);
+            
+            output.connect(dry);
+            
+            const mixer = ctx.createGain();
+            dry.connect(mixer);
+            wet.connect(mixer);
+            output = mixer;
+        }
+        
+        // 5. Delay
+        if (fx.delay > 0) {
+            const dry = ctx.createGain();
+            dry.gain.value = 1;
+            
+            const wet = ctx.createGain();
+            wet.gain.value = fx.delay * 0.5;
+            
+            const delayNode = ctx.createDelay(2);
+            delayNode.delayTime.value = fx.delayTime;
+            
+            const delayFeedback = ctx.createGain();
+            delayFeedback.gain.value = 0.4 * fx.delay;
+            
+            output.connect(delayNode);
+            delayNode.connect(delayFeedback);
+            delayFeedback.connect(delayNode);
+            delayNode.connect(wet);
+            
+            output.connect(dry);
+            
+            const mixer = ctx.createGain();
+            dry.connect(mixer);
+            wet.connect(mixer);
+            output = mixer;
+        }
+        
+        // 6. Reverb
+        if (fx.reverb > 0) {
+            const dry = ctx.createGain();
+            dry.gain.value = 1;
+            
+            const wet = ctx.createGain();
+            wet.gain.value = fx.reverb * 0.4;
+            
+            // Generate impulse response
+            const sampleRate = ctx.sampleRate;
+            const length = sampleRate * fx.reverbSize;
+            const impulse = ctx.createBuffer(2, length, sampleRate);
+            
+            for (let channel = 0; channel < 2; channel++) {
+                const data = impulse.getChannelData(channel);
+                for (let i = 0; i < length; i++) {
+                    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2);
+                }
+            }
+            
+            const convolver = ctx.createConvolver();
+            convolver.buffer = impulse;
+            
+            output.connect(convolver);
+            convolver.connect(wet);
+            
+            output.connect(dry);
+            
+            const mixer = ctx.createGain();
+            dry.connect(mixer);
+            wet.connect(mixer);
+            output = mixer;
+        }
+        
+        return output;
     }
     
     // 808 Kick Synthesis
