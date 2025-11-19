@@ -1,6 +1,6 @@
 // Main entry point - initializes and connects all modules
 
-import { initializeTracks, saveCompleteState, loadCompleteState } from './state.js';
+import { initializeTracks, saveCompleteState, loadCompleteState, state } from './state.js';
 import { DrumSynthEngine } from './audio-engine.js';
 import { setAudioEngine, setRenderCallback, startSequencer, stopSequencer } from './sequencer.js';
 import { PatternBank } from './pattern-bank.js';
@@ -50,6 +50,10 @@ async function initAudio() {
     
     try {
         await audioEngine.initialize();
+        
+        // Initialize master FX with default state
+        audioEngine.updateMasterFX(state.masterFX);
+        
         initialized = true;
         console.log('Audio engine initialized');
     } catch (error) {
