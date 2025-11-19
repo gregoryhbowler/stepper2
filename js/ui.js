@@ -374,12 +374,21 @@ function setupTrackListeners() {
     // Track selection - enabled during playback
     document.querySelectorAll('.track').forEach(track => {
         track.addEventListener('click', (e) => {
-            if (e.target.classList.contains('track-btn') || 
-                e.target.classList.contains('lock-btn') ||
-                e.target.classList.contains('step') ||
-                e.target.classList.contains('condition-label')) {
+            // Check if click is on an interactive element that should not trigger track selection
+            const target = e.target;
+            const isButton = target.classList.contains('track-btn') || 
+                            target.classList.contains('lock-btn');
+            const isStep = target.classList.contains('step') || 
+                          target.classList.contains('velocity-bar') ||
+                          target.classList.contains('velocity-display') ||
+                          target.closest('.step');
+            const isCondition = target.classList.contains('condition-label');
+            
+            if (isButton || isStep || isCondition) {
                 return;
             }
+            
+            // Select this track
             setSelectedTrack(track.dataset.track);
             renderTracks();
             renderSidePanel();
