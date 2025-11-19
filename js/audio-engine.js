@@ -737,75 +737,113 @@ export class DrumSynthEngine {
         return { output: ampEnv, stopTime };
     }
     
-    // Karplus-Strong
+    // Improved Karplus-Strong (based on provided code)
     createKS(params, startTime, duration) {
         const ctx = this.audioContext;
         const now = startTime || ctx.currentTime;
+        const maxAmplitude = 1;
         
-        // Create excitation
-        const bufferSize = ctx.sampleRate * 0.1;
-        const excitationBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-        const data = excitationBuffer.getChannelData(0);
+        // Calculate delay line parameters
+        const delaySizeInSamples = Math.round(ctx.sampleRate / params.pitch);
+        const impulseDurationInSeconds = 0.0005 * (1 + params.exciter * 10); // Exciter controls burst length
+        const impulseDurationInSamples = Math.round(impulseDurationInSeconds * ctx.sampleRate);
         
-        // Mix of impulse and noise
-        for (let i = 0; i < bufferSize; i++) {
-            const impulse = i < 10 ? (1 - params.exciter) : 0;
-            const noise = (Math.random() * 2 - 1) * params.exciter;
-            data[i] = impulse + noise;
-        }
+        // Use ScriptProcessor for true Karplus-Strong implementation
+        const karplusNode = ctx.createScriptProcessor(4096, 0, 1);
+        const delayBuffer = new Float32Array(delaySizeInSamples);
+        let delayBufferIndex = 0;
         
-        const excitation = ctx.createBufferSource();
-        excitation.buffer = excitationBuffer;
+        // Feedback gain controls decay
+        const feedbackGain = 0.995 - (params.damping * 0.1);
         
-        // Delay line (string)
-        const delayTime = (1 / params.pitch) * params.stretch;
-        const delay = ctx.createDelay(2);
-        delay.delayTime.value = delayTime;
+        let impulseCountdownInSamples = impulseDurationInSamples;
+        let isActive = true;
+        const maxDuration = params.decay;
+        const startTimeStamp = Date.now();
         
-        // Feedback with damping filter
-        const feedback = ctx.createGain();
-        feedback.gain.value = 0.98;
+        // Random number generator
+        const random = (range) => Math.random() * 2 * range - range;
         
-        const damping = ctx.createBiquadFilter();
-        damping.type = 'lowpass';
-        damping.frequency.value = params.pitch * (2 + params.brightness * 8);
-        damping.Q.value = 1;
+        karplusNode.addEventListener("audioprocess", (event) => {
+            if (!isActive) return;
+            
+            // Check if we should stop
+            const elapsed = (Date.now() - startTimeStamp) / 1000;
+            if (elapsed > maxDuration) {
+                isActive = false;
+                karplusNode.disconnect();
+                return;
+            }
+            
+            const output = event.outputBuffer.getChannelData(0);
+            
+            for (let i = 0; i < event.outputBuffer.length; i++) {
+                // Generate noise impulse at start
+                const noiseSample = (--impulseCountdownInSamples >= 0) ? 
+                    random(maxAmplitude) * (1 - params.exciter * 0.5) : 0;
+                
+                // Get delayed samples for averaging
+                const currentSample = delayBuffer[delayBufferIndex];
+                const nextSample = delayBuffer[(delayBufferIndex + 1) % delaySizeInSamples];
+                
+                // Classic Karplus-Strong: average with feedback
+                delayBuffer[delayBufferIndex] = noiseSample + feedbackGain * (currentSample + nextSample) / 2;
+                
+                // Apply brightness filter (lowpass characteristic)
+                if (params.brightness < 0.9) {
+                    const smoothing = 1 - params.brightness;
+                    delayBuffer[delayBufferIndex] = 
+                        delayBuffer[delayBufferIndex] * (1 - smoothing) + 
+                        currentSample * smoothing;
+                }
+                
+                output[i] = delayBuffer[delayBufferIndex];
+                
+                // Advance delay buffer index
+                if (++delayBufferIndex >= delaySizeInSamples) {
+                    delayBufferIndex = 0;
+                }
+            }
+        });
         
-        // Pick position (comb filter effect)
-        const pickFilter = ctx.createBiquadFilter();
-        pickFilter.type = 'allpass';
-        pickFilter.frequency.value = params.pitch / params.pickPos;
-        
-        // Connect delay loop
-        excitation.connect(delay);
-        delay.connect(damping);
-        damping.connect(feedback);
-        feedback.connect(pickFilter);
-        pickFilter.connect(delay);
-        
-        // Output with envelope
+        // Output envelope for smooth fade
         const env = ctx.createGain();
         env.gain.setValueAtTime(1, now);
-        env.gain.exponentialRampToValueAtTime(0.001, now + params.decay);
+        env.gain.setValueAtTime(1, now + maxDuration * 0.7);
+        env.gain.exponentialRampToValueAtTime(0.001, now + maxDuration);
         
-        delay.connect(env);
+        karplusNode.connect(env);
         
-        // Additional noise
-        if (params.noise > 0) {
-            const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * params.decay, ctx.sampleRate);
+        // Optional tone filter
+        let output = env;
+        if (params.stretch !== 1) {
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = params.pitch * (1 + params.stretch * 4);
+            filter.Q.value = 2;
+            env.connect(filter);
+            output = filter;
+        }
+        
+        // Add noise texture
+        if (params.noise > 0.1) {
+            const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * maxDuration, ctx.sampleRate);
             const noiseData = noiseBuffer.getChannelData(0);
             for (let i = 0; i < noiseData.length; i++) {
-                noiseData[i] = (Math.random() * 2 - 1) * params.noise * 0.1;
+                noiseData[i] = (Math.random() * 2 - 1) * params.noise * 0.05 * Math.exp(-i / (ctx.sampleRate * maxDuration * 0.3));
             }
             const noiseSource = ctx.createBufferSource();
             noiseSource.buffer = noiseBuffer;
-            noiseSource.connect(env);
+            
+            const noiseMixer = ctx.createGain();
+            output.connect(noiseMixer);
+            noiseSource.connect(noiseMixer);
+            output = noiseMixer;
+            
             noiseSource.start(now);
         }
         
-        excitation.start(now);
-        
-        return { output: env, stopTime: now + params.decay + 0.1 };
+        return { output, stopTime: now + maxDuration + 0.1 };
     }
     
     // Buchla Bongo
