@@ -372,25 +372,42 @@ function setupEventListeners() {
 
 function setupTrackListeners() {
     // Track selection - enabled during playback
-    document.querySelectorAll('.track').forEach(track => {
-        track.addEventListener('click', (e) => {
-            // Check if click is on an interactive element that should not trigger track selection
-            const target = e.target;
-            const isButton = target.classList.contains('track-btn') || 
-                            target.classList.contains('lock-btn');
-            const isStep = target.classList.contains('step') || 
-                          target.classList.contains('velocity-bar') ||
-                          target.classList.contains('velocity-display') ||
-                          target.closest('.step');
-            const isCondition = target.classList.contains('condition-label');
+    document.querySelectorAll('.track').forEach(trackElement => {
+        // Use a simpler approach - handle at the track level and check what was clicked
+        trackElement.addEventListener('click', function(e) {
+            const clickedElement = e.target;
             
-            if (isButton || isStep || isCondition) {
+            // If clicked element or any parent is a button, return
+            if (clickedElement.closest('button')) {
                 return;
             }
             
-            // Select this track
-            setSelectedTrack(track.dataset.track);
-            renderTracks();
+            // If clicked element or any parent is a step, return  
+            if (clickedElement.closest('.step')) {
+                return;
+            }
+            
+            // If clicked on condition label, return
+            if (clickedElement.classList.contains('condition-label')) {
+                return;
+            }
+            
+            // Otherwise, select this track
+            const trackId = this.dataset.track;
+            
+            // Update selected track in state
+            setSelectedTrack(trackId);
+            
+            // Update visual selection without full re-render
+            document.querySelectorAll('.track').forEach(t => {
+                if (t.dataset.track === trackId) {
+                    t.classList.add('selected');
+                } else {
+                    t.classList.remove('selected');
+                }
+            });
+            
+            // Update side panel to show new track
             renderSidePanel();
         });
     });
