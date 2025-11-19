@@ -17,6 +17,15 @@ export class DrumSynthEngine {
         try {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
             
+            // Load Karplus-Strong AudioWorklet
+            try {
+                await this.audioContext.audioWorklet.addModule('js/karplus-worklet.js');
+                this.workletLoaded = true;
+            } catch (error) {
+                console.warn('AudioWorklet not available, will fall back to ScriptProcessor:', error);
+                this.workletLoaded = false;
+            }
+            
             // Create master gain
             this.masterGain = this.audioContext.createGain();
             this.masterGain.gain.value = 0.7;
@@ -737,8 +746,53 @@ export class DrumSynthEngine {
         return { output: ampEnv, stopTime };
     }
     
-    // Karplus-Strong (based on provided code - simple and musical!)
+    // Karplus-Strong - using AudioWorklet for better performance
     createKS(params, startTime, duration) {
+        const ctx = this.audioContext;
+        const now = startTime || ctx.currentTime;
+        
+        // Try to use AudioWorklet if available
+        if (this.workletLoaded) {
+            try {
+                const workletNode = new AudioWorkletNode(ctx, 'karplus-strong-processor', {
+                    processorOptions: {
+                        pitch: params.pitch,
+                        damping: params.damping,
+                        decay: params.decay
+                    }
+                });
+                
+                // Simple gain envelope
+                const env = ctx.createGain();
+                env.gain.setValueAtTime(1, now);
+                env.gain.setValueAtTime(1, now + params.decay * 0.8);
+                env.gain.linearRampToValueAtTime(0, now + params.decay);
+                
+                workletNode.connect(env);
+                
+                // Optional brightness control
+                let output = env;
+                if (params.brightness < 0.8) {
+                    const filter = ctx.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.value = params.pitch * (2 + params.brightness * 8);
+                    filter.Q.value = 0.5;
+                    env.connect(filter);
+                    output = filter;
+                }
+                
+                return { output, stopTime: now + params.decay + 0.1 };
+            } catch (error) {
+                console.warn('AudioWorklet failed, falling back to ScriptProcessor:', error);
+            }
+        }
+        
+        // Fallback to ScriptProcessor (deprecated but works)
+        return this.createKSScriptProcessor(params, now);
+    }
+    
+    // ScriptProcessor fallback for Karplus-Strong
+    createKSScriptProcessor(params, startTime) {
         const ctx = this.audioContext;
         const now = startTime || ctx.currentTime;
         const maxAmplitude = 1;
@@ -746,23 +800,19 @@ export class DrumSynthEngine {
         // Simple random noise generator
         const random = (range) => Math.random() * 2 * range - range;
         
-        // Parameters for the algorithm
-        const impulseDurationInSeconds = 0.0005; // 500 microseconds of noise
+        // Parameters - exact from original code
+        const impulseDurationInSeconds = 0.0005; // 500 microseconds
         const impulseDurationInSamples = Math.round(impulseDurationInSeconds * ctx.sampleRate);
         let impulseCountdownInSamples = impulseDurationInSamples;
         
-        // Create the scriptProcessor node
         const karplusStrongNode = ctx.createScriptProcessor(4096, 0, 1);
-        
-        // Delay buffer sized to match the desired frequency
         const delaySizeInSamples = Math.round(ctx.sampleRate / params.pitch);
-        const delayBuffer = new Float32Array(delaySizeInSamples);
+        const delayBuffer = new Float32Array(delaySizeInSamples); // Initialized to zeros
         let delayBufferIndex = 0;
         
-        // Feedback gain - very close to 1.0 for sustain, use damping parameter
+        // Feedback gain - use damping parameter
         const gain = 0.995 - (params.damping * 0.15);
         
-        // Track if we should keep processing
         let isActive = true;
         const startTimeStamp = Date.now();
         const maxDuration = params.decay;
@@ -770,7 +820,7 @@ export class DrumSynthEngine {
         karplusStrongNode.addEventListener("audioprocess", (event) => {
             if (!isActive) return;
             
-            // Check if we've exceeded the decay time
+            // Check duration
             const elapsed = (Date.now() - startTimeStamp) / 1000;
             if (elapsed > maxDuration) {
                 isActive = false;
@@ -778,30 +828,26 @@ export class DrumSynthEngine {
             }
             
             const output = event.outputBuffer.getChannelData(0);
-            
-            for (let i = 0; i < event.outputBuffer.length; i++) {
-                // Generate the initial noise burst (500 microseconds)
+            for (let i = 0; i < output.length; i++) {
+                // Generate noise only during the initial burst
                 const noiseSample = (--impulseCountdownInSamples >= 0) ? random(maxAmplitude) : 0;
                 
-                // Get current and next sample from delay buffer for averaging
-                const currentSample = delayBuffer[delayBufferIndex];
-                const nextSample = delayBuffer[(delayBufferIndex + 1) % delaySizeInSamples];
+                // THE KEY LINE - exact from your code:
+                // Read from current and next position, average them with gain, add noise, write to current
+                delayBuffer[delayBufferIndex] = noiseSample + gain *
+                    (delayBuffer[delayBufferIndex] + delayBuffer[(delayBufferIndex + 1) % delaySizeInSamples]) / 2;
                 
-                // The magic of Karplus-Strong: simple averaging lowpass filter + feedback
-                delayBuffer[delayBufferIndex] = noiseSample + gain * (currentSample + nextSample) / 2;
-                
-                // Output the current sample
+                // Output current sample
                 output[i] = delayBuffer[delayBufferIndex];
                 
-                // Advance the delay buffer index (circular buffer)
-                delayBufferIndex++;
-                if (delayBufferIndex >= delaySizeInSamples) {
+                // Advance index
+                if (++delayBufferIndex >= delaySizeInSamples) {
                     delayBufferIndex = 0;
                 }
             }
         });
         
-        // Simple envelope to prevent clicks at the end
+        // Simple gain envelope
         const env = ctx.createGain();
         env.gain.setValueAtTime(1, now);
         env.gain.setValueAtTime(1, now + maxDuration * 0.8);
@@ -809,7 +855,7 @@ export class DrumSynthEngine {
         
         karplusStrongNode.connect(env);
         
-        // Optional brightness filter (additional lowpass)
+        // Optional brightness control via additional filter
         let output = env;
         if (params.brightness < 0.8) {
             const filter = ctx.createBiquadFilter();
