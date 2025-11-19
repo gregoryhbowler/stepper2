@@ -595,7 +595,7 @@ function handleStepMouseMove(e) {
     
     if (Math.abs(deltaY) > 3) {
         const track = state.tracks[dragState.trackId];
-        const newVelocity = Math.max(0, Math.min(1, dragState.startVelocity + (deltaY * 0.003)));
+        const newVelocity = Math.max(0, Math.min(1, dragState.startVelocity + (deltaY * 0.01)));
         track.velocities[dragState.stepIndex] = newVelocity;
         
         if (!dragState.wasActive) {
